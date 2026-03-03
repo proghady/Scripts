@@ -1,0 +1,249 @@
+<#
+- Reads UPNs from CSV
+- Pulls today's calendar events for each user
+- Keeps only events where that user is the organizer
+- Uses joinWebUrl to find the OnlineMeeting
+- Gets attendance report records and counts attendees
+- Deduplicates output
+
+Required Graph Application permissions (Admin-consented):
+- Calendars.Read
+- OnlineMeetings.Read.All
+- OnlineMeetingArtifact.Read.All
+- User.Read.All
+
+Requires Teams Application Access Policy granted to the organizer users. [1](https://cloudbymoe.com/f/use-graph-api-and-power-automate-to-pull-reports-from-teams)
+
+Known limits:
+- attendanceReports list returns up to 50 most recent reports. [2](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BF1B0E891-9790-413F-9EBA-71388FF710ED%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
+- meetingAttendanceReport "Get" doesn't support channel meetings. [3](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BDF8AC502-7C1B-486D-9013-97C49263B199%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
+
+
+
+
+https://learn.microsoft.com/en-us/graph/cloud-communication-online-meeting-application-access-policy#configure-application-access-policy
+#>
+
+# ==============================
+# CONFIG
+# ==============================
+$TenantId     = "f7f3ee1d-94c8-4dff-acd2-885168bdc33e"
+$ClientId     = "e1b699bb-4f06-43bc-8334-1848296c7f2f"
+$ClientSecret = "Chm8Q~Z0B9nCyu.LZFBg-TxMhVB-YZvridsNHcr4"               # use rotated secret
+$UsersCsv     = "C:\Temp\users.csv"
+$OutputFile   = "C:\Temp\Meetings_AttendeeCount_Today.csv"
+
+# ==============================
+# AUTH (Client Credentials)
+# ==============================
+$tokenBody = @{
+  client_id     = $ClientId.Trim()
+  scope         = "https://graph.microsoft.com/.default"
+  client_secret = $ClientSecret.Trim()
+  grant_type    = "client_credentials"
+}
+
+$tokenResponse = Invoke-RestMethod -Method POST `
+  -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
+  -Body $tokenBody `
+  -ContentType "application/x-www-form-urlencoded"
+
+$Headers = @{
+  Authorization = "Bearer $($tokenResponse.access_token)"
+}
+
+# ==============================
+# HELPERS
+# ==============================
+function Invoke-GraphGetAll {
+  param([Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$true)][hashtable]$Headers)
+
+  $all = @()
+  $next = $Uri
+  while ($next) {
+    $resp = Invoke-RestMethod -Headers $Headers -Uri $next -Method GET
+    if ($resp.value) { $all += $resp.value }
+    $next = $resp.'@odata.nextLink'
+  }
+  return $all
+}
+
+function Show-GraphErrorBody {
+  param($err)
+  try {
+    $resp = $err.Exception.Response
+    if ($resp -and $resp.GetResponseStream()) {
+      $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+      return $reader.ReadToEnd()
+    }
+  } catch {}
+  return $err.Exception.Message
+}
+
+function Get-UserIdByUpn {
+  param([Parameter(Mandatory=$true)][string]$Upn,
+        [Parameter(Mandatory=$true)][hashtable]$Headers)
+
+  $clean = $Upn.Trim()
+  $encoded = [System.Uri]::EscapeDataString($clean)
+  $uri1 = "https://graph.microsoft.com/v1.0/users/$encoded?`$select=id,userPrincipalName"
+
+  try {
+    return (Invoke-RestMethod -Headers $Headers -Uri $uri1 -Method GET).id
+  } catch {
+    # Fallback: filter
+    $escapedForOData = $clean -replace "'", "''"
+    $uri2 = "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName&`$filter=userPrincipalName%20eq%20'$escapedForOData'"
+    $resp = Invoke-RestMethod -Headers $Headers -Uri $uri2 -Method GET
+    if ($resp.value -and $resp.value.Count -gt 0) { return $resp.value[0].id }
+    throw "Cannot resolve userId for UPN: $clean"
+  }
+}
+
+function Escape-ODataString {
+  param([string]$s)
+  # OData string literal escaping for single quotes
+  return ($s -replace "'", "''")
+}
+
+# ==============================
+# DATE RANGE (TODAY, local machine time)
+# ==============================
+$Start = (Get-Date -Hour 0 -Minute 0 -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")  # '2026-03-01T00:00:00'#
+$End   = (Get-Date -Hour 23 -Minute 59 -Second 59).ToString("yyyy-MM-ddTHH:mm:ss")
+
+# ==============================
+# LOAD USERS FROM CSV
+# ==============================
+$csv = Import-Csv $UsersCsv
+if (-not $csv -or $csv.Count -eq 0) { throw "CSV is empty: $UsersCsv" }
+
+$UPNs = @()
+if ($csv[0].PSObject.Properties.Name -contains "UserPrincipalName") {
+  $UPNs = $csv | ForEach-Object { $_.UserPrincipalName } | Where-Object { $_ -and $_.Trim() -ne "" }
+} elseif ($csv[0].PSObject.Properties.Name -contains "UPN") {
+  $UPNs = $csv | ForEach-Object { $_.UPN } | Where-Object { $_ -and $_.Trim() -ne "" }
+} else {
+  throw "CSV must contain 'UserPrincipalName' or 'UPN' column."
+}
+
+$Results = @()
+
+# ==============================
+# MAIN LOOP (Organizer only)
+# ==============================
+foreach ($upn in $UPNs) {
+  $upnTrim = $upn.Trim()
+  Write-Host ("Processing organizer: {0}" -f $upnTrim)
+
+  # Resolve organizer UPN -> userId GUID
+  $userId = $null
+  try {
+    $userId = Get-UserIdByUpn -Upn $upnTrim -Headers $Headers
+  } catch {
+    Write-Warning ("Cannot resolve userId for {0}. Error: {1}" -f $upnTrim, (Show-GraphErrorBody $_))
+    continue
+  }
+
+  # Pull today's calendar events
+  $eventsUri = "https://graph.microsoft.com/v1.0/users/$userId/calendarView" +
+               "?startDateTime=$Start&endDateTime=$End" +
+               "&`$select=id,subject,start,end,onlineMeeting,organizer"
+
+  $events = @()
+  try {
+    $events = Invoke-GraphGetAll -Uri $eventsUri -Headers $Headers
+  } catch {
+    Write-Warning ("CalendarView failed for {0}. Error: {1}" -f $upnTrim, (Show-GraphErrorBody $_))
+    continue
+  }
+
+  foreach ($evt in $events) {
+
+    # OPTION B FILTER: keep only meetings organized by this user
+    $organizerUpn = $null
+    if ($evt.organizer -and $evt.organizer.emailAddress) {
+      $organizerUpn = $evt.organizer.emailAddress.address
+    }
+    if (-not $organizerUpn) { continue }
+    if ($organizerUpn.ToLower() -ne $upnTrim.ToLower()) { continue }
+
+    # Must be an online meeting with join url
+    $joinWebUrl = $null
+    if ($evt.onlineMeeting) {
+      $joinWebUrl = $evt.onlineMeeting.joinWebUrl
+      if (-not $joinWebUrl) { $joinWebUrl = $evt.onlineMeeting.joinUrl }
+    }
+    if (-not $joinWebUrl) { continue }
+
+    # Find OnlineMeetingId using JoinWebUrl (organizer context)
+    $escapedJoin = Escape-ODataString $joinWebUrl
+    $findMeetingUri = "https://graph.microsoft.com/v1.0/users/$userId/onlineMeetings?`$filter=JoinWebUrl%20eq%20'$escapedJoin'"
+
+    $found = $null
+    try {
+      $found = Invoke-RestMethod -Headers $Headers -Uri $findMeetingUri -Method GET
+    } catch {
+      # If policy is missing you would see "No application access policy found..." per MS doc. [1](https://cloudbymoe.com/f/use-graph-api-and-power-automate-to-pull-reports-from-teams)
+      Write-Warning ("Find OnlineMeeting failed for {0}. Error: {1}" -f $upnTrim, (Show-GraphErrorBody $_))
+      continue
+    }
+
+    if (-not $found.value -or $found.value.Count -eq 0) { continue }
+    $onlineMeetingId = $found.value[0].id
+
+    # List attendance reports (up to 50 most recent). [2](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BF1B0E891-9790-413F-9EBA-71388FF710ED%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
+    $reportsUri = "https://graph.microsoft.com/v1.0/users/$userId/onlineMeetings/$onlineMeetingId/attendanceReports"
+
+    $reports = @()
+    try {
+      $reports = Invoke-GraphGetAll -Uri $reportsUri -Headers $Headers
+    } catch {
+      # Often means meeting hasn't ended yet => report not created, or meeting type not supported.
+      continue
+    }
+
+    foreach ($rep in $reports) {
+      # Get report + expand records (count attendees)
+      # Note: channel meetings have limitations (Get doesn't support channel meetings). [3](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BDF8AC502-7C1B-486D-9013-97C49263B199%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
+      $repUri = "https://graph.microsoft.com/v1.0/users/$userId/onlineMeetings/$onlineMeetingId/attendanceReports/$($rep.id)?`$expand=attendanceRecords"
+
+      $full = $null
+      try {
+        $full = Invoke-RestMethod -Headers $Headers -Uri $repUri -Method GET
+      } catch {
+        continue
+      }
+
+      $records = @()
+      if ($full.attendanceRecords) { $records = $full.attendanceRecords }
+
+      $Results += [PSCustomObject]@{
+        OrganizerUPN       = $upnTrim
+        MeetingSubject     = $evt.subject
+        MeetingStart       = $evt.start.dateTime
+        MeetingEnd         = $evt.end.dateTime
+        AttendeeCount      = ($records | Measure-Object).Count
+        OnlineMeetingId    = $onlineMeetingId
+        AttendanceReportId = $rep.id
+        CalendarEventId    = $evt.id
+      }
+    }
+  }
+}
+
+# ==============================
+# DEDUPLICATION
+# One row per unique meeting session/report
+# ==============================
+$Results = $Results |
+  Sort-Object OnlineMeetingId, AttendanceReportId, MeetingStart |
+  Group-Object OnlineMeetingId, AttendanceReportId |
+  ForEach-Object { $_.Group[0] }
+
+# ==============================
+# EXPORT
+# ==============================
+$Results | Export-Csv $OutputFile -NoTypeInformation -Encoding UTF8
+Write-Host ("✅ Deduped report exported to {0}" -f $OutputFile)
