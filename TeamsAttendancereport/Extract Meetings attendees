@@ -13,16 +13,16 @@ Required Graph Application permissions (Admin-consented):
 - OnlineMeetingArtifact.Read.All
 - User.Read.All
 
-Requires Teams Application Access Policy granted to the organizer users. [1](https://cloudbymoe.com/f/use-graph-api-and-power-automate-to-pull-reports-from-teams)
+Requires Teams Application Access Policy granted to the organizer users. https://learn.microsoft.com/en-us/graph/cloud-communication-online-meeting-application-access-policy#configure-application-access-policy
 
 Known limits:
-- attendanceReports list returns up to 50 most recent reports. [2](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BF1B0E891-9790-413F-9EBA-71388FF710ED%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
-- meetingAttendanceReport "Get" doesn't support channel meetings. [3](https://microsoft.sharepoint.com/teams/CampusIPLibraries/SDMPlus/_layouts/15/Doc.aspx?sourcedoc=%7BDF8AC502-7C1B-486D-9013-97C49263B199%7D&file=User%20Access%20Review.xlsx&action=default&mobileredirect=true&DefaultItemOpen=1)
+- attendanceReports list returns up to 50 most recent reports. https://learn.microsoft.com/en-us/graph/api/meetingattendancereport-list?view=graph-rest-1.0&tabs=http
+- meetingAttendanceReport "Get" doesn't support channel meetings. https://learn.microsoft.com/en-us/graph/api/meetingattendancereport-get?view=graph-rest-1.0&tabs=http
 
 
 
 
-https://learn.microsoft.com/en-us/graph/cloud-communication-online-meeting-application-access-policy#configure-application-access-policy
+
 #>
 
 # ==============================
