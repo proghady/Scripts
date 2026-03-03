@@ -1,4 +1,5 @@
 <#
+- please Run the One time setup file first
 - Reads UPNs from CSV
 - Pulls today's calendar events for each user
 - Keeps only events where that user is the organizer
