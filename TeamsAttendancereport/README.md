@@ -79,7 +79,7 @@ Create an app registration and grant **Application permissions**:
 
 ***
 
-### 2️⃣ Teams Application Access Policy (Required)
+### 2️⃣ Teams Application Access Policy (Required) >> run One-time setup.ps1
 
 Microsoft Teams **requires an Application Access Policy** for app‑only access to online meetings.
 
@@ -107,8 +107,10 @@ Policy propagation can take **up to 30 minutes** before Graph calls succeed.
 
 ## ▶️ How to Run the Script
 
-1.  Open **PowerShell 7+** (recommended)
-2.  Update the configuration section in the script:
+1. Create Entra ID APP with the proper permissions
+2. run One-Time Setup 
+3. Open **PowerShell 7+** (recommended)
+4. Update the configuration section in the script:
 
 ```powershell
 $TenantId     = "<TENANT_ID>"
