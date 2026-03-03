@@ -144,6 +144,7 @@ Each row represents **one completed meeting session**.
 *   Channel meetings have limited support for attendance report retrieval
 *   `attendanceReports` listing returns **up to 50 most recent reports**
 *   External or cross‑tenant organizers are skipped
+*   Microsoft Graph API throttling https://learn.microsoft.com/en-us/graph/throttling 
 
 These behaviors are enforced by Microsoft Graph and are **by design**.
 
