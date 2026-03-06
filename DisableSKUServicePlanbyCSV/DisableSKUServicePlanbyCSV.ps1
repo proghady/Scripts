@@ -58,4 +58,5 @@ $UpdateResult | Select UserPrincipalName,Status| FT
 $UpdateResult | Export-CSV -Path $env:USERPROFILE\$((Get-Date).ToString("yyyyMMdd_HHmmss"))"_ReportbyCSV.csv" -NoTypeInformation -Encoding UTF8
 
  
+
 #Disconnect-MgGraph
